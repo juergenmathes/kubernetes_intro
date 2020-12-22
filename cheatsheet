@@ -1,0 +1,314 @@
+kubectl get nodes
+kubectl get pod
+kubectl get services
+kubectl create deployment nginx-depl --image=nginx
+kubectl get deployment
+kubectl get pod
+kubectl get replicaset
+kubectl edit deployment nginx-depl
+kubectl get pod
+kubectl get replicaset
+
+# debugging pods
+
+kubectl logs nginx-depl-xxxxxxxx-xxx
+kubectl create deployment mongo-depl --image=mongo
+kubectl logs mongo-depl-xxxxxxx-xxxxxxxx
+kubectl get pod
+kubectl describe pod mongo-depl-xxxxxxx-xxxxxxxx
+kubectl logs  mongo-depl-xxxxxxx-xxxxxxxx
+kubectl get pod
+
+kubectl exec -it mongo-depl-xxxxxxx-xxxxxxxx-- bin/bash
+
+# deleting pods
+kubectl get deployment 
+kubectl get pod
+kubectl delete deployment mongo-depl
+kubectl get pod
+kubectl get replicaset
+
+
+# configure deployments
+# instead of kubectl create deployment name image option1 option2 ... we use config files
+# kubectl apply -f config-file.yaml
+touch nginx-deployment.yaml
+vim nginx-deployment.yaml
+kubectl apply -f nginx-deployment.yaml
+kubectl get pod
+kubectl get deployment
+vim nginx-deployment.yaml # to change replicas
+kubectl apply -f nginx-deployment.yaml
+kubectl get deployment
+kubectl get pod
+
+
+# syntax of configuration file 
+# 1) meta data
+# 2) specification
+# 3) status automatically added by kubernetes - use yaml validator
+#    good practice store with code or its own git repo.
+
+#######################
+nginx-deployment.yaml >>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels: nginx
+spec: 
+  replicas: 2
+  selector: 
+    matchLabels:
+      app: nginx
+    template: 
+      metadata: 
+        labels:
+          apps: nginx
+      spec:
+        containers:
+        - name: nginx
+          image: nginx:1.16
+          ports:
+          - containerPort: 8080
+
+#######################
+nginx-service.yaml >>
+apiVersion: v1
+kind: Service 
+metadata:
+  name: nginx-service
+spec: 
+  selector: 
+    app: nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+
+
+
+kubectl apply -f nginx-deployment.yaml
+kubectl apply -f nginx-service.yaml
+kubectl get pod
+kubectl get service
+kubectl describe service nginx-service
+kubectl pod -o wide
+
+kubectl get deployment nginx-deployment -o yaml # gets you updated status storedin etcd
+kubectl delete -f nginx-service.yaml
+kubectl delete -f nginx-deployment.yaml
+
+echo -n "username" | base64 # leading to xxxxxx
+echo -n "password" | base64 # leading to xxxxx
+
+mongo-secret.yaml >>
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret 
+type: Opaque
+data:
+    mongo-root-username: xxxxxxxxx
+    mongo-root-password: xxxxx
+
+kubectl apply -f mongo-secret.yaml
+kubectl get secret
+
+# mongo db express and mongo db
+# starting again with a new clean cluster
+# go to hub.docker mongo to check what ports etc it is using
+kubectl get all
+mongo.yaml >> # or mongo-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: 
+  name: mongodb-deployment
+  labels:
+    app: mongodb
+spec: 
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+    template:
+      metadata:
+        labels:
+          app: mongodb
+        spec:
+          containers:
+        - name: mongodb
+          image: mongo
+          ports:
+        - containerPort: 27017 
+        env: 
+        - name: MONGO_INITDB_ROOT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: mongo-root-username
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom: 
+            secretKeyRef:
+              name: mongodb-secret
+              key: mongo-root-password
+
+
+kubectl apply -f mongo.yaml
+kubectl get all
+kubectl get pod --watch
+kubectl describe pod mongodb-deployment-xxxxxxxxxxxx
+kubectl get pod 
+
+# add the following part to the mongo.yaml
+# this three dashes meaning a new file in the same yaml file
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-service
+spec: 
+  selector:
+    app:mongodb
+  ports:
+    - protocol: TCP
+      port: 27017 # this is the service port # port and targetport can be different. 
+      targetPort: 27017 # this is the container/pod port and has to match the port above
+
+kubectl apply -f mongo.yaml # we expect that deployment is unchanged and service/mongodb-service created
+kubectl get service # see the ports of the mongodb service needs to be 27017
+kubectl describe service mongodb-service # endpoint, is address of a pot and the port of the pot to which it is listening
+kubectl get pod -o wide # check the ip address with last commands endpoints. 
+kubectl get all | grep mongodb
+
+# until now we have created the mongodb and mongodb internal service
+# go to hub.docker.com mongo express to see ports and important environment variables
+# now we create the mongo express external service, mongo express and and a db url stored in the configmap
+mongo-express.yaml >>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-express
+  labels:
+    app: mongo-express
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: mongo-express
+    template: # pod definition
+      metadata:
+        labels:
+          app: mongo-express
+        spec:
+          containers:
+          - name: mongo-express
+            image: mongo-express
+            ports:
+            - containerPort: 8081
+            env:
+            - name: ME_CONFIG_MONGODB_ADMINUSERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: mongo-root-username
+            -name: ME_CONFIG_MONGODB_ADMINPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: mongo-root-password
+            -name: ME_CONFIG_MONGODB_SERVER # this is the database server
+             valueFrom:    # we could directly the mongodb server address  but, since other resources want to use it as well, we will use the config-map
+               configMapKeyRef:
+                 name: mongodb-configmap
+                 key: database_url
+
+mongo-configmap.yaml >>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongodb-configmap
+data:
+  database_url: mongodb-service
+
+
+kubectl apply -f mongo-configmap.yaml
+kubectl apply -f mongo-express.yaml
+kubectl get pod
+
+# no do external service add the following to the end of mongo-express.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-express-service
+spec:
+  selector:
+    app: mongo-express
+  type: LoadBalancer # that is the name for the external service. the type name is a little bit misleading. what is does is: 
+                     # assigns service an external IP address and so accpets external requests
+  ports:
+  - protocol: TCP
+    port: 8081 # is the exposing port
+    targetPort: 8081 # port from above where the container listens to. 
+    nodePort: # port where the external ip address will be open and must be between 30000 and 32767
+
+kubectl apply -f mongo-express.yaml
+kubectl get service    # you see ClusterIP and LoadBalancer under type
+                       # Internal service or cluster ip is DEFAULT 
+                       # CLuster IP is the internal ip address
+                       # you also see a External ip
+                       # at PORTS you can have 1 or 2 ports depening if it is an internal or an external service
+
+
+
+###########################################################
+
+# new topic: namespaces
+# there are 4 out of the box namespaces
+# kubernetes-dashboard
+# kube-system  - do not create or modify in kube-system. there system and master processes
+# kube-public - contains public accessible data even without authentication 
+kubectl cluster-info
+# kube-node-lease - contains information about heartbeat of nodes
+# default namespace - default namespace if you havent one.
+kubectl create namespace my-namespace
+kubectl get namespaces
+# but better use ConfigMap yaml file to create these namespaces. 
+apiVersion: v1
+kind: ConfigMap
+metadata: 
+  name: mysql-configmap
+  namespaces: my-namespace
+data: 
+  db_url: mysql-service.database
+
+
+  # when using namespaces: to group applications like databases monitoring etc. pp. 
+  # do not use namespaces if you are a group smaller than 10 people
+  # but use it if you have 2 teams using the same cluster.
+  # there are problems if e.g. you have same namings. 
+  # namespaces should be used for staging and development 
+  # namespaces can be used for versioning.  one namespace for old version and other for new version
+  # also access and resource limits can be applied on namespaces.  - each team has its own secure isolated environment. 
+  # also limit the cpu and Ram resources and storage per namespace
+
+  # what are the characteristics of a namespace:
+  # you cant access most resources from another namespace
+  # e.g. a config map has to be there for each namespace
+  # the same holds for secret. 
+  # but what you can share across namespaces are services. 
+
+  # certain things can not be isolated in namespaces
+  # this are: peristent volumnes and node. 
+  kubectl api-resources --namespaced=false # to check which components are not bound to a namespace
+  kubectl api-resouces --namespace=true
+
+ kubectl get all -n my-namespace
+ kubectl apply -f mysql-configmap.yaml --namespace=my-namespace # or add the namespace into the metadata
+ # its better to put the namespace into the yaml
+ 
+ # use kubectx to change default namespace for all you kubectl commands. without providing --namespace ... 
+
+  
+   
